@@ -1,11 +1,10 @@
--- name: Squishy Music Player
+-- name: Squishy Radio
 -- description: A Music Player built into CoopDX
 
 --- @class MusicPlayerData
 --- @field public name string Song Name
 --- @field public artist string Song Artist
 --- @field public stream ModAudio 
---- @field public sampleRate integer The sample rate of your music (Reccomended to keep at 16000 or lower)
 --- @field public loopA integer Where your music starts looping in seconds
 --- @field public loopB integer Where your music stops looping in seconds
 --- @field public length integer The duration of the song in seconds
@@ -13,6 +12,23 @@
 
 function num_wrap(num, min, max)
     return min + (num - min) % ((max + 1) - min)
+end
+
+---@param string string
+--- Splits a string into a table by spaces
+function string_split(string, splitAt)
+    if splitAt == nil then
+        splitAt = " "
+    end
+    local result = {}
+    for match in string:gmatch(string.format("[^%s]+", splitAt)) do
+        table.insert(result, match)
+    end
+    return result
+end
+
+function string_endswith(s, suffix)
+    return string.sub(s, 1 + #s - #suffix) == suffix
 end
 
 local secondaryTargetVolume = 1
@@ -40,16 +56,185 @@ end
 
 musicTracks = {
     {
-        name = "Factory Investigation Remix",
-        artist = "iR2-X (Newgrounds)",
-        stream = audio_stream_load("factory-remix.ogg"),
-        sampleRate = 16000,
-        loopA = 24.143,
-        loopB = 91.906,
-        length = 91.906,
-        bpm = 85,
+        name = "Main Theme",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_GRASS,
+    },
+    {
+        name = "Slider",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_SLIDE,
+    },
+    {
+        name = "Inside the Castle Walls",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_INSIDE_CASTLE,
+    },
+    {
+        name = "Dire, Dire Docks",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_WATER,
+    },
+    {
+        name = "Lethal Lava Land",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_HOT,
+    },
+    {
+        name = "Snow Mountain",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_SNOW,
+    },
+    {
+        name = "Haunted House",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_SPOOKY,
+    },
+    {
+        name = "Cave Dungeon",
+        artist = "Super Mario 64",
+        seq = SEQ_LEVEL_UNDERGROUND,
+    },
+    {
+        name = "Piranha Plant's Lullaby",
+        artist = "Super Mario 64",
+        seq = SEQ_EVENT_PIRANHA_PLANT,
     },
 }
+
+function get_music_data_from_name(stream)
+    for id, data in pairs(musicTracks) do
+        if stream == data.name then
+            return id, data
+        end
+    end
+end
+
+function get_music_data_from_stream(stream)
+    for id, data in pairs(musicTracks) do
+        if stream == data.stream or stream == data.seq then
+            return id, data
+        end
+    end
+end
+
+local function load_music_storage(modFs, loadPlaylists)
+    if type(modFs) == "string" then
+        local modFsGet = mod_fs_get(modFs)
+        if modFsGet then
+            modFs = modFsGet
+        else
+            log_to_console("[Squishy Radio] ModFs Folder '"..modFs.."' Not Found!", CONSOLE_MESSAGE_WARNING)
+            return false
+        end
+    end
+    if not modFs then
+        log_to_console("[Squishy Radio] ModFs Folder does not exist!", CONSOLE_MESSAGE_WARNING)
+        return false
+    end
+    local audioFiles = 0
+    for i = 0, modFs.numFiles - 1 do
+        local fileName = modFs:get_filename(i)
+        local file = modFs:get_file(fileName)
+
+        if string_endswith(fileName, ".ogg") or string_endswith(fileName, ".mp3") then
+            audioFiles = audioFiles + 1
+            local audio = audio_stream_load("modfs:/"..modFs.modPath.."/"..file.filepath)
+            local fileBytes = file:read_bytes(file.size)
+            if string_endswith(fileName, ".ogg") then
+                local titleStart, titleEnd = string.find(string.lower(fileBytes), "title=([%w%s_,-]+)")
+                local artistStart, artistEnd = string.find(string.lower(fileBytes), "artist=([%w%s_,-]+)")
+
+                -- account for weird audacity splitter
+                if math.abs(artistEnd - titleStart) < 5 then
+                    artistEnd = artistEnd - 1
+                end
+
+                table.insert(musicTracks, {
+                    name = titleStart and string.gsub(string.sub(fileBytes, titleStart + 6, titleEnd), "\n", "") or string.gsub(fileName, ".ogg", ""),
+                    artist = artistStart and string.gsub(string.sub(fileBytes, artistStart + 7, artistEnd), "\n", "") or "???",
+                    stream = audio,
+                })
+            else
+                -- Lowkey idk how to read mp3 metadata ts too hard
+                table.insert(musicTracks, {
+                    name = string.gsub(fileName, ".mp3", ""),
+                    artist = "???",
+                    stream = audio,
+                })
+            end
+        end
+    end
+    if audioFiles > 0 then
+        log_to_console("[Squishy Radio] ModFs Folder '"..modFs.modPath.."' Loaded with "..audioFiles.." tracks!", CONSOLE_MESSAGE_INFO)
+        return true
+    else
+        log_to_console("[Squishy Radio] ModFs Folder '"..modFs.modPath.."' does not have any audio!", CONSOLE_MESSAGE_WARNING)
+        return false
+    end
+end
+
+local modFs = mod_fs_get() or mod_fs_create() ---@type ModFs
+modFs:set_public(true)
+load_music_storage(modFs, true)
+local dirFile = modFs:get_file("directories.txt") or modFs:create_file("directories.txt", true)
+local dirsString = dirFile:read_string()
+dirFile:erase(dirFile.size)
+dirFile:set_text_mode(true) -- Set mode to text
+dirFile:rewind() -- Reset offset to the beginning of the file
+if dirsString then
+    local dirs = string_split(dirsString, "|")
+    local writeDirs = ""
+    for _, dir in pairs(dirs) do
+        local modFs = mod_fs_get(dir)
+        if not modFs then
+            log_to_console("[Squishy Radio] ModFs Folder '"..dir.."' Not Found!")
+        else
+            if load_music_storage(modFs) then
+                
+            else
+                log_to_console("[Squishy Radio] ModFs Folder '"..dir.."' has no Audio!")
+            end
+            writeDirs = writeDirs .. modFs.modPath .. "|"
+        end
+    end
+    dirFile:write_string(writeDirs)
+end
+modFs:save()
+
+-- Assign Music to playlists
+local seqPlaylist = {}
+
+local seqPrefixes = {
+    "SEQ_LEVEL_",
+    "SEQ_MENU_",
+    "SEQ_EVENT_",
+}
+
+for varName, seqId in pairs(_G) do
+    for _, prefFind in pairs(seqPrefixes) do
+        if string.find(varName, prefFind) then
+            seqPlaylist[seqId] = {
+                name = varName
+            }
+            local playlistFile = modFs:get_file(varName.."_playlist.txt")
+            if playlistFile and playlistFile.size > 0 then
+                local nameList = string_split(playlistFile:read_string(), "|")
+                for i = 1, #nameList do
+                    local _, data = get_music_data_from_name(nameList[i])
+                    if data then
+                        table.insert(seqPlaylist[seqId], data)
+                    end
+                end
+            else
+                local _, data = get_music_data_from_stream(seqId)
+                if data then
+                    table.insert(seqPlaylist[seqId], data)
+                end
+            end
+        end
+    end
+end
 
 currPlaylistPos = 1
 
@@ -62,36 +247,38 @@ local function player_popup(string, icon)
     })
 end
 
-local playing = false
-local prevPlaying = false
 local looping = false
 local prevPlaylistPos = 1
 local streamPos = 0
 local streamHangCounter = 0
 local overridePauseVolume = 1
 local overridePauseFrequency = 1
+local playMusicInternal = false
+local initMusic = true
+local resetMusic = true
 local function update()
-    local controller = gMarioStates[0].controller
-
     -- Song Change Stuffs
-    if prevPlaylistPos ~= currPlaylistPos then
+    if prevPlaylistPos ~= currPlaylistPos or resetMusic then
+        initMusic = true
         local currData = musicTracks[currPlaylistPos]
         local prevData = musicTracks[prevPlaylistPos]
 
-        audio_stream_stop(prevData.stream)
+        if prevData.stream then
+            audio_stream_stop(prevData.stream)
+        end
+            playMusicInternal = true
+            set_background_music(SEQ_PLAYER_LEVEL, 0, 0)
+            playMusicInternal = false
         player_popup("Now Playing: " .. currData.name .. " / " .. currData.artist, gTextures.mario_head)
         streamPos = 0
-        prevPlaying = not playing
         prevPlaylistPos = currPlaylistPos
+        resetMusic = false
     end
 
     local data = musicTracks[currPlaylistPos]
 
     -- Player Controls
-    if controller.buttonPressed & L_TRIG ~= 0 then
-        playing = not playing
-        player_popup("Playback " .. (playing and "Resumed" or "Paused"))
-    end
+    --[[
     if controller.buttonPressed & L_JPAD ~= 0 then
         player_popup("Previous Song")
         currPlaylistPos = num_wrap(currPlaylistPos - 1, 1, #musicTracks)
@@ -104,54 +291,52 @@ local function update()
         looping = not looping
         player_popup("Looping " .. (looping and "Single Track" or "All Tracks"))
     end
+    ]]
 
-    -- Update Track Single Looping
-    audio_stream_set_looping(data.stream, looping)
-    if looping then
-        if data.sampleRate ~= nil and data.loopA ~= nil and data.loopB ~= nil then
-            audio_stream_set_loop_points(data.stream, data.sampleRate * data.loopA, data.sampleRate * data.loopB)
+    if not data then return end
+
+    if data.stream then
+        -- Update Track Single Looping
+        audio_stream_set_looping(data.stream, looping)
+        if looping then
+            if data.loopA ~= nil and data.loopB ~= nil then
+                audio_stream_set_loop_points(data.stream, data.stream.frequency * data.loopA, data.stream.frequency * data.loopB)
+            end
+        else
+            audio_stream_set_loop_points(data.stream, 0, 0)
         end
-    else
-        audio_stream_set_loop_points(data.stream, 0, 0)
-    end
 
-    -- "Muffle" song when paused
-    overridePauseVolume = math.lerp(overridePauseVolume, is_game_paused() and 0.25 or 1, 0.2)
-    overridePauseFrequency = math.lerp(overridePauseFrequency, is_game_paused() and 0.75 or 1, 0.2)
+        -- "Muffle" song when paused
+        overridePauseVolume = math.lerp(overridePauseVolume, is_game_paused() and 0.25 or 1, 0.2)
+        overridePauseFrequency = math.lerp(overridePauseFrequency, is_game_paused() and 0.75 or 1, 0.2)
 
-    -- Secondary Music Functionality
-    secondaryTargetFadeTimer = approach_f32(secondaryTargetFadeTimer, secondaryTargetFadeTarget, 1, 1)
+        -- Secondary Music Functionality
+        local volume = sequence_player_get_fade_volume(SEQ_PLAYER_LEVEL)
+        secondaryTargetFadeTimer = approach_f32(secondaryTargetFadeTimer, secondaryTargetFadeTarget, 1, 1)
 
-    local fadeTimer = secondaryTargetFadeOut and (secondaryTargetFadeTarget - secondaryTargetFadeTimer) or secondaryTargetFadeTimer
-    local secondaryVolume = math.lerp(secondaryTargetVolume, 1, secondaryTargetFadeTarget ~= 0 and fadeTimer/secondaryTargetFadeTarget or 1)
-    
-    audio_stream_set_volume(data.stream, overridePauseVolume * secondaryVolume)
-    audio_stream_set_frequency(data.stream, overridePauseFrequency)
+        --local fadeTimer = secondaryTargetFadeOut and (secondaryTargetFadeTarget - secondaryTargetFadeTimer) or secondaryTargetFadeTimer
+        --local secondaryVolume = math.lerp(secondaryTargetVolume, 1, secondaryTargetFadeTarget ~= 0 and fadeTimer/secondaryTargetFadeTarget or 1)
+        
+        audio_stream_set_volume(data.stream, overridePauseVolume * volume)
+        audio_stream_set_frequency(data.stream, overridePauseFrequency)
 
-    if data.stream.loaded then
-        if prevPlaying ~= playing then
-            if playing then
+        if data.stream.loaded then
+            if initMusic then
+                playMusicInternal = true
                 audio_stream_play(data.stream, false, 0)
                 audio_stream_set_position(data.stream, streamPos)
                 audio_stream_set_volume(data.stream, 1)
-            else
-                audio_stream_pause(data.stream)
+                playMusicInternal = false
+                initMusic = false
             end
-            prevPlaying = playing
-        end
 
-        if playing then
-            -- Handle Song Ending
-            og_play_secondary_music(0, 0, 0, 50)
             if streamPos ~= audio_stream_get_position(data.stream) then
                 streamPos = audio_stream_get_position(data.stream)
                 streamHangCounter = 0
             else
-                if streamHangCounter > 5 or (streamPos >= data.length and not looping) then
+                if streamHangCounter > 5 or (data.length and streamPos >= data.length and not looping) then
                     if not looping then
                         currPlaylistPos = num_wrap(currPlaylistPos + 1, 1, #musicTracks)
-                    else
-                        prevPlaying = not playing
                     end
                     streamPos = 0
                     streamHangCounter = 0
@@ -159,8 +344,13 @@ local function update()
                     streamHangCounter = streamHangCounter + 1
                 end
             end
-        else
-            og_stop_secondary_music(50)
+        end
+    else
+        if initMusic then
+            playMusicInternal = true
+            set_background_music(SEQ_PLAYER_LEVEL, data.seq, 0)
+            playMusicInternal = false
+            initMusic = false
         end
     end
 end
@@ -179,7 +369,9 @@ local function hud_render()
     djui_hud_render_rect(screenWidth - 80, screenHeight - 20, 80, 20)
     djui_hud_set_color(255, 255, 255, 150)
     djui_hud_render_rect(screenWidth - 80, screenHeight - 20, 80, 5)
-    hudStreamPos = math.lerp(hudStreamPos, (streamPos * 44100/currData.sampleRate)/currData.length, 0.3)
+    if currData then
+        hudStreamPos = 0--math.lerp(hudStreamPos, (streamPos * 44100/currData.stream.frequency)/(currData.length or 0), 0.3)
+    end
     djui_hud_set_color(255, 255, 255, 255)
     djui_hud_render_rect(screenWidth - 80, screenHeight - 20, 80*hudStreamPos, 5)
 
@@ -205,37 +397,132 @@ local function hud_render()
     end
 end
 
-local function level_init()
-    prevPlaying = not playing
+local function seq_load(player, seqId)
+    if not playMusicInternal and player == SEQ_PLAYER_LEVEL then
+        local randSong = nil
+        local list = seqPlaylist[seqId]
+        if list then
+            currPlaylistPos = get_music_data_from_name(list[math.random(1, #list)].name)
+        end
+        resetMusic = true
+        return 0
+    end
 end
 
 hook_event(HOOK_UPDATE, update)
 hook_event(HOOK_ON_HUD_RENDER, hud_render)
-hook_event(HOOK_ON_LEVEL_INIT, level_init)
+hook_event(HOOK_ON_SEQ_LOAD, seq_load)
 
--- API --
-
----@param musicData MusicPlayerData Song Name
-local function song_add(musicData)
-    if musicData.stream == nil or not musicData.stream.isStream then
-        log_to_console("[Squishy MP] Audio Stream Not Found", CONSOLE_MESSAGE_ERROR)
-        return false
+local function chat_command(msg)
+    local msgSplit = string_split(msg)
+    if msgSplit[1] == "load" then
+        local path = ""
+        for i = 2, #msgSplit do
+            path = path .. msgSplit[i] .. (i == #msgSplit and "" or " ")
+        end
+        path = string.gsub(path, ".modfs", "")
+        if load_music_storage(path) then
+            djui_chat_message_create("Added '"..path.."!'")
+            dirFile:write_string(path.."|")
+            modFs:save()
+        else
+            djui_chat_message_create("Failed to find ModFs file '"..path.."'")
+        end
+        return true
     end
 
-    table.insert(musicTracks, {
-        name = musicData.name,
-        artist = musicData.artist,
-        stream = musicData.stream,
-        --fileName = musicData.stream.filepath:gsub("[/\\]+$", ""):gsub(".*[/\\]", ""),
-        sampleRate = musicData.sampleRate,
-        loopA = musicData.loopA,
-        loopB = musicData.loopB,
-        length = musicData.length,
-        bpm = musicData.bpm,
-    })
+    menuPage = 1
     return true
 end
 
-_G.squishMusic = {
-    song_add = song_add,
-}
+hook_chat_command("radio", "- blah blahh", chat_command)
+
+-- Menu
+menuPage = 0
+currScroll = 1
+
+local currSeqId = SEQ_LEVEL_GRASS
+local function hud_render()
+    if menuPage == 0 then return end
+    local controller = gMarioStates[0].controller
+    djui_hud_set_resolution(RESOLUTION_N64)
+    if controller.buttonPressed & L_TRIG ~= 0 then
+        --player_popup("Previous Song")
+        currSeqId = num_wrap(currSeqId - 1, 1, #seqPlaylist)
+    end
+    if controller.buttonPressed & R_TRIG ~= 0 then
+        --player_popup("Next Song")
+        currSeqId = num_wrap(currSeqId + 1, 1, #seqPlaylist)
+    end
+
+    local listMax = #seqPlaylist[currSeqId] + 1
+    if controller.buttonPressed & U_JPAD ~= 0 then
+        --player_popup("Previous Song")
+        currScroll = num_wrap(currScroll - 1, 1, listMax)
+    end
+    if controller.buttonPressed & D_JPAD ~= 0 then
+        --player_popup("Next Song")
+        currScroll = num_wrap(currScroll + 1, 1, listMax)
+    end
+
+    djui_hud_set_color(0, 0, 0, 200)
+    djui_hud_render_rect(10, 10, 150, 200)
+    djui_hud_set_font(FONT_NORMAL)
+
+    djui_hud_set_color(255, 255, 255, 255)
+    djui_hud_print_text(seqPlaylist[currSeqId].name, 20, 15, 0.25, 0.25)
+
+    local listLength = 0
+    for i = 1, listMax - 1 do
+        local currTrack = seqPlaylist[currSeqId][i]
+        if currScroll == i then
+            if controller.buttonPressed & L_JPAD ~= 0 then
+                local currId = get_music_data_from_name(currTrack.name)
+                --player_popup("Previous Song")
+                seqPlaylist[currSeqId][i] = musicTracks[num_wrap(currId - 1, 1, #musicTracks)]
+            end
+            if controller.buttonPressed & R_JPAD ~= 0 then
+                local currId = get_music_data_from_name(currTrack.name)
+                --player_popup("Next Song")
+                seqPlaylist[currSeqId][i] = musicTracks[num_wrap(currId + 1, 1, #musicTracks)]
+            end
+            if controller.buttonPressed & A_BUTTON ~= 0 then
+                currPlaylistPos = get_music_data_from_name(currTrack.name)
+            end
+            if controller.buttonPressed & X_BUTTON ~= 0 then
+                table.remove(seqPlaylist[currSeqId], i)
+            end
+
+            djui_hud_set_color(255, 255, 255, 255)
+        else
+            djui_hud_set_color(255, 255, 255, 150)
+        end
+        listLength = listLength + 20
+        djui_hud_print_text(currTrack.name, 20, listLength, 0.5)
+    end
+
+    if currScroll == listMax then
+        listLength = listLength + 20
+        if controller.buttonPressed & A_BUTTON ~= 0 then
+            table.insert(seqPlaylist[currSeqId], musicTracks[1])
+        end
+    end
+
+    if controller.buttonPressed & B_BUTTON ~= 0 then
+        menuPage = 0
+        for _, playlist in pairs(seqPlaylist) do
+            local playlistFile = modFs:get_file(playlist.name.."_playlist.txt") or modFs:create_file(playlist.name.."_playlist.txt", true)
+            playlistFile:erase(dirFile.size)
+            playlistFile:set_text_mode(true) -- Set mode to text
+            playlistFile:rewind() -- Reset offset to the beginning of the file
+            local listString = ""
+            for i = 1, #playlist do
+                listString = listString .. playlist[i].name .. "|"
+            end
+            playlistFile:write_string(listString)
+        end
+        modFs:save()
+    end
+end
+
+hook_event(HOOK_ON_HUD_RENDER, hud_render)
